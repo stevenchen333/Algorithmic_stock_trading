@@ -37,7 +37,7 @@ def retrieve_stock(tickers,  start_date, end_date , save_file = False, dataframe
     tickers = [ticker.lower() for ticker in tickers]      
          
     # Define API Token
-    _token = "7bbff840a4b0ac286cf20d9de651ca836748be7d"
+    _token = "" # put tokens here
     headers = {
             'Content-Type': 'application/json'
             }
