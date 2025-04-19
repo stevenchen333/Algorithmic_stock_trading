@@ -25,7 +25,7 @@ class DLP:
             return self.w(timestep)
         else:
             # If w is not a function, return it directly
-        return self.w
+            return self.w
     
     def get_alpha(self, timestep = None):
         if callable(self.alpha):
@@ -33,7 +33,8 @@ class DLP:
         else:
             # If alpha is not a function, return it directly
             return self.alpha
-   
+        
+        
     def initial_acc_value(self,v_0 = 2000):
         alpha = self.get_alpha()
 
