@@ -1,3 +1,6 @@
+from typing import Callable
+
+
 class DLP:
     '''
     This class implements the Dynamic Leverage Portfolio (DLP) strategy.
@@ -57,7 +60,7 @@ class DLP:
         return stock_returns
         
     def dlp(self):
-        returns = returns()
+        returns = self.returns()
         w = self.get_w()
         alpha = self.get_alpha()
 
@@ -80,3 +83,4 @@ class DLP:
             V[i+1] = V_L[i+1] + V_S[i+1]
         return V_L, V_S,V, pi_L, pi_S
 #------------------------------------------------------
+

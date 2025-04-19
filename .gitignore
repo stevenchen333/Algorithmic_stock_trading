@@ -208,6 +208,8 @@ pyrightconfig.json
 
 constants.py
 
+ttingo_api.py
+
 # End of https://www.toptal.com/developers/gitignore/api/python,macos
 
 
