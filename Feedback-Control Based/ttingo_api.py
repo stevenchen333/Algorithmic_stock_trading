@@ -5,6 +5,7 @@ Run the code below to create data for stock prices
 import requests
 import json
 import pandas as pd
+import polars as pl
 from datetime import datetime
 
 def create_stock_df(stocks, tickers):
@@ -14,7 +15,7 @@ def create_stock_df(stocks, tickers):
     Returns:
         pd.DataFrame: DataFrame with 'Time' as the index and the selected stock ticker(s) as columns.
     """
-    stocks = pd.DataFrame(stocks)
+    stocks = pl.DataFrame(stocks)
     available_tickers = list(stocks.columns)
     available_tickers.remove("Time")
 

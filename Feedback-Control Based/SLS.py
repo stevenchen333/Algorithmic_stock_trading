@@ -9,17 +9,6 @@ from typing import Callable
 
 
 
-#----------------------------------------------------
-
-class K:
-    #list all available methods
-    methods_avail = ["custom","RL","static","DLP","adaptive"]
-
-    def __init__(self, methods):
-        if methods not in self.methods_avail:
-            raise ValueError(f"Invalid method: {methods}. Choose from {self.methods_avail}.")
-        self.method = methods
-
 #------------------------------------------------------
 
 
@@ -82,83 +71,7 @@ class SLS:
 
 #------------------------------------------------------
 
-class DLP:
-    '''
-    SLS: Simultaneous Long-Short Trading Algorithm
-    Args:
-        w(int, float, function): w needs to be a function
-        alpha(0,1): alpha needs to be a function
-        epsilon(0,1): denotes transaction cost
-        Stocks(JSON, Dict): Is stock prices in Json or dictionary format. The key value must include Time, and Assets 
-        (e.g.,
-        {Time: [t1, t2,t ..., tn]
-        AAPL: [p1, p2, ..., pn]}
-                    .
-                    .
-                    .
-        )
-    
-    Return:
-        Dataframe: cumulative gains and their respective index
-    
-    '''
-    def __init__(self,w,alpha,stocks, tickers):
-        if (functions.is_function(w) == False):
-            raise ValueError("w must be a function or a numeric constant")     
-        if (functions.is_function(alpha) == False):
-            raise ValueError("alpha must be a function or a numeric constant")       
-        self.alpha = alpha
-        self.w = w
-        self.stocks = stocks
 
-    def get_stock(self):
-        return self.stocks
-
-    def get_w(self):
-        return self.w
-    
-    def get_alpha(self):
-        return self.alpha
-    
-    def initial_acc_value(self,v_0 = 2000):
-        alpha = self.get_alpha()
-
-        vl0 = alpha*v_0
-        vs0 = (1-alpha)*v_0
-
-        return vl0, vs0
-    
-    def pi_l(self, w, v_l):
-        pi_l = w*v_l
-        return pi_l
-    def pi_l(self, w, v_s):
-        pi_s = w*v_s
-        return pi_s
-    
-    
-    def returns(self):
-        stock = self.get_stock()
-        returns = stock.pct_change().dropna()
-        return self.returns
-        
-    def dlp(self):
-        returns = returns()
-        w = self.get_w
-        alpha = self.get_alpha
-
-        V_L[0] = V_L0
-        V_S[0] = V_S0
-
-        for k in range(n):
-            V_L[k + 1] = V_L[k] + X[k] * pi_L[k] - epsilon * pi_L[k]
-            V_S[k + 1] = V_S[k] + X[k] * pi_S[k] - epsilon * abs(pi_S[k])
-            return vL, vS, v
-
-
-
-
-
-    
     
 
     
