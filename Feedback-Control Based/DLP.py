@@ -1,5 +1,5 @@
 from typing import Callable
-
+import pandas as pd
 
 class DLP:
     '''
@@ -14,8 +14,9 @@ class DLP:
         The leverage factor. Can be a constant or a function of time.
     param stocks: DataFrame consisting of one stock price
     '''
-    def __init__(self,w,alpha,stocks, tickers):
-        self.tickers = tickers   
+    def __init__(self, stocks, tickers,w = 0.5,alpha = 0.5, init_value = 2000):
+        self.tickers = [i.lower() for i in tickers]
+        self.init_value = init_value   
         self.alpha = alpha
         self.w = w
         self.stocks = stocks
@@ -38,9 +39,9 @@ class DLP:
             return self.alpha
         
         
-    def initial_acc_value(self,v_0 = 2000):
+    def initial_acc_value(self):
         alpha = self.get_alpha()
-
+        v_0 = self.init_value
         vl0 = alpha*v_0
         vs0 = (1-alpha)*v_0
 
@@ -48,7 +49,7 @@ class DLP:
     
     def pi(self, w, v_l,v_s):
         pi_l = w*v_l
-        pi_s = w*v_s
+        pi_s = -w*v_s
         return pi_s, pi_l
     
         
@@ -56,31 +57,44 @@ class DLP:
     
     def returns(self):
         stock = self.get_stock()
-        stock_returns = (stock[1:] - stock[:-1]) / stock[:-1]
+        stock_value = stock[self.tickers[0]].values
+        stock_returns = (stock_value[1:] - stock_value[:-1]) / stock_value[:-1]
         return stock_returns
         
     def dlp(self):
         returns = self.returns()
-        w = self.get_w()
-        alpha = self.get_alpha()
 
         V_L0, V_S0 = self.initial_acc_value()
-        V_L = [0] * len(returns)
-        V_S = [0] * len(returns)
-        V = [0] * (len(returns))
+        V_L = [0] * (len(returns) + 1)
+        V_S = [0] * (len(returns) + 1)
+        V = [0] * (len(returns) + 1)
 
         V_L[0] = V_L0
         V_S[0] = V_S0
         V[0] = V_L0 + V_S0
 
-        pi_L = [0] * len(returns)
-        pi_S = [0] * len(returns)
+        pi_L = [0] * (len(returns))
+        pi_S = [0] * (len(returns))
 
         for i in range(len(returns)):
+            w = self.get_w(i)
             pi_L[i], pi_S[i] = self.pi(w, V_L[i], V_S[i])
-            V_L[i+1] = V_L[i] +(returns[i] * pi_L[i])
-            V_S[i+1] = V_S[i] +(returns[i] * pi_S[i])
-            V[i+1] = V_L[i+1] + V_S[i+1]
-        return V_L, V_S,V, pi_L, pi_S
+            V_L[i + 1] = V_L[i] + (returns[i] * pi_L[i])
+            V_S[i + 1] = V_S[i] + (returns[i] * pi_S[i])
+            V[i + 1] = V_L[i + 1] + V_S[i + 1]
+        # Fill shorter lists with NaN to align with length of V
+        pi_L.append(float('nan'))
+        pi_S.append(float('nan'))
+
+        df = pd.DataFrame({
+            'V_L': V_L,
+            'V_S': V_S,
+            'V': V,
+            'pi_L': pi_L,
+            'pi_S': pi_S,
+        })
+        return df
+
 #------------------------------------------------------
+
 
