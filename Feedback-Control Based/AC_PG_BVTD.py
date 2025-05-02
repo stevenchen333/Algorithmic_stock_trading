@@ -35,10 +35,14 @@ class TradingEnvironment(gym.Env):
         self.w_max = min(1/(1+self.transaction_cost), 1/(self.X_max+self.transaction_cost))
         self.action_space = spaces.Box(low=0, high=self.w_max, shape=(1,), dtype=np.float32)
         
-        # Define observation space (returns history, account values, current w)
-        observation_high = np.ones(self.window_size + 4) * np.finfo(np.float32).max
-        observation_low = np.ones(self.window_size + 4) * np.finfo(np.float32).min
+        # Calculate price series from returns (starting at 100)
+        self.prices_data = 100 * np.cumprod(1 + self.returns_data)
+        
+        # Update observation space dimension (+1 for normalized price)
+        observation_high = np.ones(self.window_size + 5) * np.finfo(np.float32).max
+        observation_low = np.ones(self.window_size + 5) * np.finfo(np.float32).min
         self.observation_space = spaces.Box(low=observation_low, high=observation_high, dtype=np.float32)
+
         
         # Initialize state variables
         self.reset()
@@ -66,17 +70,22 @@ class TradingEnvironment(gym.Env):
         return self._get_observation()
     
     def _get_observation(self):
-        #TODO: add stock price as feature
-
+        """Get current observation including price history"""
         # Returns history features
         returns_history = self.returns_data[self.current_step-self.window_size:self.current_step]
+        
+        # Get current price and normalize it
+        current_price = self.prices_data[self.current_step]
+        price_scale = self.prices_data[self.current_step-self.window_size:self.current_step+1].mean()
+        normalized_price = current_price / price_scale if price_scale > 0 else 1.0
         
         # Add account values and current w to state
         additional_features = np.array([
             self.V_L / self.V_0,        # Normalized long account value
             self.V_S / self.V_0,        # Normalized short account value
             self.V / self.V_0,          # Normalized total account value
-            self.current_w / self.w_max # Normalized weight
+            self.current_w / self.w_max, # Normalized weight
+            normalized_price            # Normalized price level
         ])
         
         # Combine into observation
@@ -263,42 +272,91 @@ class LinearPolicyGradientAgent:
     def get_value(self, state):
         """Estimate state value using linear function approximation"""
         return np.dot(state, self.w)
+    def _get_action_prob(self, state, action, use_current=False):
+        """Calculate probability of action under current or old policy"""
+        action_mean = np.dot(state, self.theta)
+        action_mean = np.clip(action_mean, 0, self.action_bound)
+        return (1.0 / (self.sigma * np.sqrt(2 * np.pi))) * \
+            np.exp(-0.5 * ((action[0] - action_mean) / self.sigma) ** 2)
     
     def update(self, state, action, reward, next_state, done):
-        # Calculate TD error
-        delta = reward + (0 if done else self.gamma * self.get_value(next_state)) - self.get_value(state)
+        """Update policy and value function parameters using experience replay"""
+        # Store experience in replay buffer
+        self.replay_buffer.push(state, action, reward, next_state, done)
+        self.step_count += 1
         
-        # Update eligibility traces
-        self.e_theta = self.gamma * self.lambda_val * self.e_theta + self._policy_gradient(state, action)
-        self.e_w = self.gamma * self.lambda_val * self.e_w + state
+        # Only update if we have enough experiences
+        if len(self.replay_buffer) < self.min_experiences:
+            return
+            
+        if self.step_count % self.update_every != 0:
+            return
+            
+        # Sample batch from replay buffer
+        states, actions, rewards, next_states, dones = self.replay_buffer.sample(self.batch_size)
         
-        # Add entropy bonus
-        entropy_bonus = self.entropy_coef * np.log(self.sigma)
+        # Normalize rewards for stability
+        rewards = (rewards - np.mean(rewards)) / (np.std(rewards) + 1e-8)
         
-        # Update parameters
-        self.theta += self.alpha * (delta * self.e_theta + entropy_bonus * state)
-        self.w += self.alpha_v * delta * self.e_w
+        # Calculate TD errors with clipping for stability
+        next_values = np.array([self.get_value(next_state) for next_state in next_states])
+        current_values = np.array([self.get_value(state) for state in states])
+        deltas = rewards + (1 - dones) * self.gamma * next_values - current_values
+        deltas = np.clip(deltas, -1, 1)  # Clip TD errors
         
+        # Calculate policy gradients with importance sampling
+        gradients = []
+        importance_weights = []
+        
+        for i in range(len(states)):
+            gradient = self._policy_gradient(states[i], actions[i])
+            old_prob = self._get_action_prob(states[i], actions[i])
+            new_prob = self._get_action_prob(states[i], actions[i], use_current=True)
+            importance_weight = np.clip(new_prob / (old_prob + 1e-8), 0.8, 1.2)
+            
+            gradients.append(gradient)
+            importance_weights.append(importance_weight)
+        
+        gradients = np.array(gradients)
+        importance_weights = np.array(importance_weights)
+        
+        # Calculate weighted updates
+        policy_update = np.mean(deltas[:, np.newaxis] * gradients * 
+                            importance_weights[:, np.newaxis], axis=0)
+        
+        # Adaptive entropy coefficient
+        entropy_coef = self.entropy_coef * (1.0 - min(1.0, self.episodes_count / 2000))
+        entropy_bonus = entropy_coef * np.log(self.sigma)
+        entropy_update = np.mean([entropy_bonus * state for state in states], axis=0)
+        
+        # Trust region update for policy
+        policy_update_norm = np.linalg.norm(policy_update)
+        if policy_update_norm > 1.0:
+            policy_update = policy_update / policy_update_norm
+        
+        # Update parameters with adaptive learning rates
+        effective_alpha = self.alpha * (1.0 / (1.0 + 0.01 * self.episodes_count))
+        effective_alpha_v = self.alpha_v * (1.0 / (1.0 + 0.01 * self.episodes_count))
+        
+        self.theta += effective_alpha * (policy_update + entropy_update)
+        self.w += effective_alpha_v * np.mean(deltas[:, np.newaxis] * states, axis=0)
+        
+        # Exploration and learning rate updates
         if done:
             self.episodes_count += 1
             
-            # Reset eligibility traces
-            self.e_theta = np.zeros_like(self.theta)
-            self.e_w = np.zeros_like(self.w)
+            # Adaptive exploration decay
+            if self.episodes_count % 5 == 0:
+                progress = min(1.0, self.episodes_count / 5000)
+                target_sigma = self.min_sigma + (1.0 - progress) * (0.2 - self.min_sigma)
+                self.sigma = self.sigma * 0.95 + target_sigma * 0.05
             
-            # Periodic exploration decay
-            if self.episodes_count % 5 == 0:  # Decay every 5 episodes
-                self.sigma = max(self.min_sigma, self.sigma * self.exploration_decay)
-            
-            # Learning rate annealing - very slow decay
-            if self.episodes_count % 100 == 0:
-                self.alpha = max(0.0001, self.alpha * 0.999)
-                self.alpha_v = max(0.001, self.alpha_v * 0.999)
-            
-            # Periodic parameter noise to escape local minima
+            # Parameter noise with decay
             if self.episodes_count % 50 == 0:
                 noise_magnitude = 0.01 * (1.0 - min(1.0, self.episodes_count / 5000))
                 self.theta += np.random.normal(0, noise_magnitude, size=self.theta.shape)
+
+        return np.mean(deltas)  # Return mean TD error for monitoring
     
     def _policy_gradient(self, state, action):
         """Calculate policy gradient for the linear Gaussian policy"""

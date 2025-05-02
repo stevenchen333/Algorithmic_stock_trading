@@ -108,69 +108,116 @@ def simulate_segment(n_days, mu, sigma, jump_intensity, jump_size):
     return returns
 
 def train_agent_across_regimes(agent_class, epochs_per_regime=1000):
-    """Train agent across different market regimes"""
-    # Market regimes to train on
-    regimes = ['normal', 'bull', 'bear', 'volatile', 'random']
+    """
+    Train agent across different market regimes with progressive difficulty
+    and curriculum learning
+    """
+    # Define regime order from simple to complex
+    regime_curriculum = [
+        'normal',    # Start with normal market
+        'bull',      # Then learn bull market
+        'bear',      # Then bear market
+        'volatile',  # Then high volatility
+        'random'     # Finally random regime switching
+    ]
     
-    # Initialize agent
-    state_size = None  # Will initialize after first environment creation
+    # Initialize agent and results storage
+    state_size = None
     action_size = 1
     agent = None
-    
     all_training_results = {}
     
-    for regime in regimes:
+    # Progressive training parameters
+    base_epochs = epochs_per_regime
+    curriculum_scaling = {
+        'normal': 0.8,    # Fewer epochs for simple regime
+        'bull': 0.9,
+        'bear': 1.0,
+        'volatile': 1.2,  # More epochs for complex regimes
+        'random': 1.5
+    }
+    
+    for regime in regime_curriculum:
         print(f"\n===== Training on {regime.upper()} market regime =====")
         
-        # Generate market data for this regime
-        returns_data, prices_data, params = simulate_realistic_market_data(
-            n_days=5000, regime=regime
-        )
+        # Scale epochs based on regime complexity
+        scaled_epochs = int(base_epochs * curriculum_scaling[regime])
+        print(f"Training for {scaled_epochs} epochs")
         
-        # Create environment
-        env = TradingEnvironment(
-            returns_data=returns_data,
-            initial_balance=1000,
-            transaction_cost=0.0,
-            alpha=0.5,
-            window_size=10,
-            max_steps=len(returns_data) - 11
-        )
+        # Generate multiple datasets for this regime
+        n_datasets = 3 if regime != 'random' else 1
+        regime_results = []
         
-        # Initialize agent if first regime
-        if agent is None:
-            state_size = env.observation_space.shape[0]
-            agent = agent_class(state_size, action_size, env.w_max)
+        for dataset_idx in range(n_datasets):
+            # Generate market data
+            returns_data, prices_data, params = simulate_realistic_market_data(
+                n_days=5000, regime=regime
+            )
+            
+            # Create environment with progressive transaction costs
+            transaction_cost = 0.0001 if regime in ['volatile', 'random'] else 0.0
+            env = TradingEnvironment(
+                returns_data=returns_data,
+                initial_balance=1000,
+                transaction_cost=0.0,
+                alpha=0.5,
+                window_size=10,
+                max_steps=len(returns_data) - 11
+            )
+            
+            # Initialize agent if first regime and dataset
+            if agent is None:
+                state_size = env.observation_space.shape[0]
+                agent = agent_class(state_size, action_size, env.w_max)
+            
+            # Train agent on this dataset
+            rewards_history, avg_rewards_history, asset_values_history = train_agent(
+                env, agent, episodes=scaled_epochs // n_datasets
+            )
+            
+            # Store results
+            regime_results.append({
+                'rewards': rewards_history,
+                'avg_rewards': avg_rewards_history,
+                'asset_values': asset_values_history,
+                'params': params
+            })
+            
+            # Evaluate after each dataset
+            eval_results = evaluate_agent(env, agent, episodes=3)
+            print(f"Dataset {dataset_idx + 1}/{n_datasets} - "
+                f"Avg Final Value: {np.mean(eval_results[1]):.2f}")
+            
+            # Save checkpoint after each dataset
+            agent.save(f"checkpoint_{regime}_dataset_{dataset_idx}.npz")
         
-        # Train agent on this regime
-        rewards_history, avg_rewards_history, asset_values_history = train_agent(
-            env, agent, episodes=epochs_per_regime
-        )
-        
-        # Save results for this regime
+        # Aggregate results for this regime
         all_training_results[regime] = {
-            'rewards': rewards_history,
-            'avg_rewards': avg_rewards_history,
-            'asset_values': asset_values_history,
-            'params': params
+            'rewards': np.mean([r['rewards'] for r in regime_results], axis=0),
+            'avg_rewards': np.mean([r['avg_rewards'] for r in regime_results], axis=0),
+            'asset_values': np.mean([r['asset_values'] for r in regime_results], axis=0),
+            'params': regime_results[0]['params']  # Store params from first dataset
         }
         
-        # Evaluate on this regime
-        eval_results = evaluate_agent(env, agent, episodes=3)
-        print(f"Evaluation on {regime} regime - Avg Final Value: {np.mean(eval_results[1]):.2f}")
+        # Final evaluation on this regime
+        eval_results = evaluate_agent(env, agent, episodes=5)
+        print(f"\nFinal evaluation on {regime} regime - "
+            f"Avg Final Value: {np.mean(eval_results[1]):.2f}")
+        
+        # Save regime-specific model
+        agent.save(f"agent_{regime}_final.npz")
     
-    # Save the trained model
-    agent.save("multi_regime_agent.npz")
+    # Save final model
+    agent.save("multi_regime_agent_final.npz")
     
     return agent, all_training_results
-
 
 # First, visualize the simulations to verify realism
 
 # Train across multiple regimes
 agent, training_results = train_agent_across_regimes(
     agent_class=LinearPolicyGradientAgent, 
-    epochs_per_regime=2000
+    epochs_per_regime=1000
 )
 
 # Visualize training results
