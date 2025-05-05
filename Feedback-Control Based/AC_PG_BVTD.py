@@ -39,8 +39,8 @@ class TradingEnvironment(gym.Env):
         self.prices_data = 100 * np.cumprod(1 + self.returns_data)
         
         # Update observation space dimension (+1 for normalized price)
-        observation_high = np.ones(self.window_size + 5) * np.finfo(np.float32).max
-        observation_low = np.ones(self.window_size + 5) * np.finfo(np.float32).min
+        observation_high = np.ones(self.window_size + 2) * np.finfo(np.float32).max
+        observation_low = np.ones(self.window_size + 2) * np.finfo(np.float32).min
         self.observation_space = spaces.Box(low=observation_low, high=observation_high, dtype=np.float32)
 
         
@@ -82,10 +82,10 @@ class TradingEnvironment(gym.Env):
         # Add account values and current w to state
         additional_features = np.array([
             self.V_L / self.V_0,        # Normalized long account value
-            self.V_S / self.V_0,        # Normalized short account value
-            self.V / self.V_0,          # Normalized total account value
-            self.current_w / self.w_max, # Normalized weight
-            normalized_price            # Normalized price level
+            self.V_S / self.V_0        # Normalized short account value
+            #self.V / self.V_0,          # Normalized total account value
+            #self.current_w / self.w_max, # Normalized weight
+            #normalized_price            # Normalized price level
         ])
         
         # Combine into observation
@@ -134,7 +134,7 @@ class TradingEnvironment(gym.Env):
             sizing_bonus = 0.5 * (1 - sizing_error/optimal_w) if abs(w) > 0.01 else -0.5
         
         # Total reward
-        reward = base_reward + risk_adjustment + zero_action_penalty + prediction_bonus + sizing_bonus
+        reward = base_reward  + zero_action_penalty #+ prediction_bonus + sizing_bonus+ risk_adjustment
         
         return reward
 

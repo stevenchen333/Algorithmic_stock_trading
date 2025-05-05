@@ -150,8 +150,10 @@ def train_agent_across_regimes(agent_class, epochs_per_regime=1000):
         
         for dataset_idx in range(n_datasets):
             # Generate market data
+            # TODO: Randomize number of days
+
             returns_data, prices_data, params = simulate_realistic_market_data(
-                n_days=5000, regime=regime
+                n_days=1000, regime=regime
             )
             
             # Create environment with progressive transaction costs
