@@ -10,13 +10,14 @@ import matplotlib.pyplot as plt
 from sklearn.model_selection import train_test_split
 
 #retrieve_stock(tickers = ['AAPL'], start_date= '2015-01-01',  end_date='2025-01-01', save_file=True, token = ttingo_api_key)
+#TODO: Test RL Agent on SP 500, MSFT, GOOGL
 
-
-with open("Feedback-Control Based/tsla_dlptest1 2023-01-03 00:00:00 - 2023-09-29 00:00:00.json", "r") as f:
+with open("test_spystock_data_2024-01-02_to_2025-01-01.json", "r") as f:
     data = json.load(f)
-
-data_df = pd.DataFrame(data)
-
+data_df = pd.DataFrame({
+    'times': data['SPY']['dates'],
+    'spy': data['SPY']['close']
+})
 def simulate_market_data(n_steps=500,mu = 0.0008, sigma = 0.02,
                         jump_intensity=0.02, jump_size=0.03,
                         initial_price=100.0):
@@ -54,6 +55,19 @@ def w3(t):
 
 
 
+def w4(t):
+    """
+    Generate weights sampled from a normal distribution with mean 0.9,
+    clipped between 0.85 and 1.0
+    
+    Args:
+        t: Time step (not used but kept for consistency with other weight functions)
+    Returns:
+        float: Clipped random weight
+    """
+    w = np.random.normal(loc=0.9, scale=0.1, size=1)[0]  # Sample from normal dist
+    w = np.clip(w, 1.0, 1.0)  # Clip values between 0.85 and 1.0
+    return w
 
 
 
@@ -72,6 +86,10 @@ _,_, v2, _,_,w_2 = dlp2.dlp()
 dlp3 = DLP(stocks = data_df, w = w3, init_value=200, return_weights=True)
 _,_, v3, _,_,w_3 = dlp3.dlp()
 
+dlp4 = DLP(stocks = data_df, w = w4, init_value=200, return_weights=True)
+_,_, v4, _,_,w_4 = dlp4.dlp()
+
+
 
 
 
@@ -79,8 +97,8 @@ _,_, v3, _,_,w_3 = dlp3.dlp()
 
 
 env = TradingEnvironment(
-    returns_data=dlp1.returns(),  # Make sure you have returns data
-    initial_balance=200,
+    data_dict=data,
+    ticker = "SPY",    initial_balance=200,
     transaction_cost=0.0,
     alpha=0.5,
     window_size=10,
@@ -96,7 +114,7 @@ agent = LinearPolicyGradientAgent(
 )
 
 try:
-    agent.load("multi_regime_agent_final.npz")
+    agent.load("multi_stock_agent_final.npz")
     print("Loaded trained agent weights")
 except FileNotFoundError:
     print("Trained weights not found. Using untrained agent.")
@@ -157,7 +175,7 @@ fig, axs = plt.subplots(2, 2, figsize=(12, 9))
 axs = axs.flatten()
 
 # Plot data with twin axes
-def plot_strategy(ax, portfolio_values, strategy_name, color, ticker='TSLA'):
+def plot_strategy(ax, portfolio_values, strategy_name, color, ticker='SPY'):
     """
     Plot trading strategy with stock price on twin axes
     
@@ -280,33 +298,72 @@ strategies = {
 # Plot comparison
 ax1, ax2 = plot_strategy_comparison(
     portfolio_values_dict=strategies,
-    stock_prices=data_df['tsla']
+    stock_prices=data_df['spy']
 )
 plt.show()
 
 plt.close('all')
+#---------#---------#---------#---------#---------#---------#---------#---------#---------#---------#---------#---------
 
-#----#----#----#----#----#----#----#----#----#----#----#----#----#----#----#----#----#----#----#----
+import json
+import pandas as pd
+import numpy as np
+from DLP import DLP
+import matplotlib.pyplot as plt
 
-# TODO: Try other stocks/bitcoin
-with open("Feedback-Control Based/nvda 2021-01-04 00:00:00 - 2024-11-29 00:00:00.json", "r") as f:
-    data = json.load(f)
+# Parameters for bear market GBM with jumps
+mu = -0.001  # Negative drift for bear market
+sigma = 0.02
+jump_intensity = 0.001  # Higher chance of jumps in volatile bear market
+jump_size = 0.001
+initial_price = 100.0
+n_steps = 252
 
-data_df = pd.DataFrame(data)[0:100]
-dlp1 = DLP(stocks = data_df, w = w1, init_value=200, return_weights=True)
-_,_, v1, _,_,w_1 = dlp1.dlp()
+# Generate GBM with jumps
+np.random.seed(42)
+normal_returns = np.random.normal(mu, sigma, n_steps)
+jumps = np.random.binomial(1, jump_intensity, n_steps) * np.random.choice([-1, 1], n_steps) * jump_size
+returns = normal_returns + jumps
+returns = np.clip(returns, -0.2, 0.2)  # Bound returns
+
+# Generate price path
+prices = initial_price * np.cumprod(1 + returns)
+
+# Create data_dict in required format
+dates = pd.date_range(start="2024-01-01", periods=n_steps).strftime('%Y-%m-%d').tolist()
+data_dict = {
+    'GBM': {
+        'open': prices.tolist(),
+        'close': prices.tolist(),
+        'high': (prices * 1.01).tolist(),  # Add small variation for high/low
+        'low': (prices * 0.99).tolist(),
+        'volume': np.random.lognormal(8, 1, n_steps).astype(int).tolist(),
+        'dates': dates
+    }
+}
+
+# Create DataFrame for DLP
+data_df = pd.DataFrame({
+    'times': dates,
+    'gbm': prices
+})
 
 
-dlp2 = DLP(stocks = data_df, w = w2, init_value=200, return_weights=True)
-_,_, v2, _,_,w_2 = dlp2.dlp()
 
+# Run DLP strategies
+np.random.seed(42)
+dlp1 = DLP(stocks=data_df, w=w1, init_value=200, return_weights=True)
+_, _, v1, _, _, w_1 = dlp1.dlp()
 
-dlp3 = DLP(stocks = data_df, w = w3, init_value=200, return_weights=True)
-_,_, v3, _,_,w_3 = dlp3.dlp()
+dlp2 = DLP(stocks=data_df, w=w2, init_value=200, return_weights=True)
+_, _, v2, _, _, w_2 = dlp2.dlp()
+
+dlp3 = DLP(stocks=data_df, w=w3, init_value=200, return_weights=True)
+_, _, v3, _, _, w_3 = dlp3.dlp()
 
 env = TradingEnvironment(
-    returns_data=dlp1.returns(),  # Make sure you have returns data
-    initial_balance=200,
+    data_dict=data_dict,
+    ticker = "GBM",    initial_balance=200,
     transaction_cost=0.0,
     alpha=0.5,
     window_size=10,
@@ -322,30 +379,27 @@ agent = LinearPolicyGradientAgent(
 )
 
 try:
-    agent.load("multi_regime_agent_final.npz")
+    agent.load("multi_stock_agent_final.npz")
     print("Loaded trained agent weights")
 except FileNotFoundError:
     print("Trained weights not found. Using untrained agent.")
-
 
 # Get RL agent's portfolio values
 agent_results = evaluate_agent_performance(env, agent)
 v_rl = agent_results['V']
 action_rl = agent_results['actions']
 
-
-
-
+# Create and show plots
 fig, axs = plt.subplots(2, 2, figsize=(12, 9))
-axs = axs.flatten()  # Flatten for easy indexing
+axs = axs.flatten()
 
-# Now plot again (this will work)
-plot_strategy(axs[0], w_1, 'Buy & Hold', 'blue', 'nvda')
-plot_strategy(axs[1], w_2, 'Logarithmic', 'green', 'nvda')
-plot_strategy(axs[2], w_3, 'Active day trading', 'orange', 'nvda')
-plot_strategy(axs[3], action_rl, 'RL Agent', 'red', 'nvda')
+# Plot each strategy
+plot_strategy(axs[0], w_1, 'Buy & Hold', 'blue', 'gbm')
+plot_strategy(axs[1], w_2, 'Logarithmic', 'green', 'gbm')
+plot_strategy(axs[2], w_3, 'Active day trading', 'orange', 'gbm')
+plot_strategy(axs[3], action_rl, 'RL Agent', 'red', 'gbm')
 
-# Set titles again
+# Set titles
 titles = ['Buy & Hold Strategy (w1)', 'Logarithmic Strategy (w2)', 
         'Active day trading (w3)', 'RL Agent Strategy']
 for ax, title in zip(axs, titles):
@@ -353,7 +407,6 @@ for ax, title in zip(axs, titles):
 
 plt.tight_layout()
 plt.show()
-
 
 # Print performance metrics
 print("\nPerformance Metrics:")
@@ -363,11 +416,7 @@ print(f"Logarithmic Final Value: ${v2[-1]:.2f}")
 print(f"RL Agent Final Value: ${v_rl[-1]:.2f}")
 print(f"RL Agent Sharpe Ratio: {agent_results['sharpe_ratio']:.2f}")
 
-
-
-
-# Example usage:
-    # Example data
+# Comparison plot
 strategies = {
     'Buy & Hold (w1)': v1,
     'Logarithmic (w2)': v2,
@@ -378,15 +427,8 @@ strategies = {
 # Plot comparison
 ax1, ax2 = plot_strategy_comparison(
     portfolio_values_dict=strategies,
-    stock_prices=data_df['nvda']
+    stock_prices=data_df['gbm']
 )
 plt.show()
 
-
-#----#----#----#----#----#----#----#----#----#----#----#----#----#----#----#----#----#----#----#----
-
-
-
-
-
-
+plt.close('all')

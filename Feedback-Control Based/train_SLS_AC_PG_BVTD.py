@@ -1,5 +1,5 @@
 import numpy as np
-from AC_PG_BVTD import TradingEnvironment, LinearPolicyGradientAgent,train_agent, evaluate_agent, plot_results
+from SLS_AC_PG_BVTD import TradingEnvironment, LinearPolicyGradientAgent,train_agent, evaluate_agent, plot_results
 import matplotlib.pyplot as plt
 import json
 
@@ -155,7 +155,7 @@ def days_randomizer(data_dict, stock, window_size=10):
 
 
 def train_agent_across_stocks(training_path, agent_class, epochs_per_stock=1000):
-    with open (training_path, "r") as f:
+    with open(training_path, "r") as f:
         training_data = json.load(f)
 
     stocks_curriculum = list(training_data.keys())
@@ -163,41 +163,42 @@ def train_agent_across_stocks(training_path, agent_class, epochs_per_stock=1000)
     # Initialize storage
     all_training_results = {}
     agent = None
-    action_size = 1
+    action_size = 1  # K is a single value
     
     for stock in stocks_curriculum:
         print(f"\n===== Training on {stock.upper()} stock =====")
         print(f"Training for {epochs_per_stock} epochs")
         training_data_slice, n_days, start_idx = days_randomizer(training_data, stock)
-        # Create environment
+        
+        # Create environment with SLS parameters
         env = TradingEnvironment(
             data_dict=training_data,
-            ticker = stock,
+            ticker=stock,
             initial_balance=1000,
             transaction_cost=0.0,
-            alpha=0.5,
+            alpha=0.5,  # Split between long and short
             window_size=10,
-            max_steps=n_days - 11  # One year of trading days
+            max_steps=n_days - 11
         )
         
         # Initialize agent if first stock
         if agent is None:
             state_size = env.observation_space.shape[0]
-            agent = agent_class(state_size, action_size, env.w_max)
+            agent = agent_class(state_size, action_size, env.K_max)  # Use K_max instead of w_max
         
         # Train agent on this stock
         rewards, avg_rewards, asset_values = train_agent(
             env, agent, episodes=epochs_per_stock
         )
         
-        # Collect actions by running one episode
-        actions_list = []
+        # Collect K values by running one episode
+        K_values = []
         state = env.reset()
         done = False
         while not done:
             action = agent.get_action(state)
-            actions_list.append(action)
-            next_state, reward, done, _ = env.step(action)
+            K_values.append(action)
+            next_state, reward, done, info = env.step(action)
             state = next_state
         
         # Store results for this stock
@@ -205,29 +206,28 @@ def train_agent_across_stocks(training_path, agent_class, epochs_per_stock=1000)
             'rewards': rewards,
             'avg_rewards': avg_rewards,
             'asset_values': asset_values,
-            'actions': actions_list  # Store collected actions
+            'K_values': K_values  # Store K values instead of actions
         }
         
         # Final evaluation
-        eval_rewards, eval_values, weights_history, env_returns = evaluate_agent(env, agent, episodes=100)
+        eval_rewards, eval_values, K_history, returns_history = evaluate_agent(env, agent, episodes=100)
         print(f"\nFinal evaluation on {stock} stock - "
             f"Avg Final Value: {np.mean(eval_values):.2f}")
         
         # Save stock-specific model
-        agent.save(f"agent_{stock}_final.npz")
+        agent.save(f"sls_agent_{stock}_final.npz")
     
     # Save final model
-    agent.save("multi_stock_agent_final.npz")
+    agent.save("sls_multi_stock_agent_final.npz")
     
     return agent, all_training_results
 
-agent, training_results = train_agent_across_stocks(training_path="trainstock_data_2015-01-01_to_2024-01-01.json",
+agent, training_results = train_agent_across_stocks(training_path="trainstock_data_2020-01-01_to_2024-01-01.json",
     agent_class=LinearPolicyGradientAgent, 
     epochs_per_stock=1000
 )
 
-# Visualize training results
-def plot_training_across_stocks(training_results, save_path = None):
+def plot_training_across_stocks(training_results):
     stocks = list(training_results.keys())
     fig, axs = plt.subplots(len(stocks), 4, figsize=(20, 4*len(stocks)))
     
@@ -247,45 +247,28 @@ def plot_training_across_stocks(training_results, save_path = None):
         axs[i, 1].set_ylabel('Final Value')
         axs[i, 1].grid(True)
         
-        # Plot action histogram
-        if 'actions' in training_results[stock] and len(training_results[stock]['actions']) > 0:
-            actions = np.array(training_results[stock]['actions']).flatten()
-            axs[i, 2].hist(actions, bins=20, density=True)
-            axs[i, 2].set_title(f"Action Distribution - {stock.capitalize()}")
-            axs[i, 2].set_xlabel('Action Value')
+        # Plot K value histogram
+        if 'K_values' in training_results[stock] and len(training_results[stock]['K_values']) > 0:
+            K_values = np.array(training_results[stock]['K_values']).flatten()
+            axs[i, 2].hist(K_values, bins=20, density=True)
+            axs[i, 2].set_title(f"K Distribution - {stock.capitalize()}")
+            axs[i, 2].set_xlabel('K Value')
             axs[i, 2].set_ylabel('Density')
             axs[i, 2].grid(True)
         
         # Plot cumulative returns
         if 'asset_values' in training_results[stock]:
-            # Convert to numpy array first
-            all_values = np.array(training_results[stock]['asset_values'])
-            
-            # Determine sample size (min of 100 or length of data)
-            sample_size = min(100, len(all_values))
-            
-            # Sample values using linear indices to maintain temporal order
-            indices = np.linspace(0, len(all_values)-1, sample_size, dtype=int)
-            values = all_values[indices]
-            
-            # Calculate cumulative returns
+            values = np.array(training_results[stock]['asset_values'])
             initial_value = values[0]
             cum_returns = (values - initial_value) / initial_value * 100
-            
-            # Plot with proper x-axis
-            x_axis = np.linspace(0, len(all_values), sample_size)
-            axs[i, 3].plot(x_axis, cum_returns)
+            axs[i, 3].plot(cum_returns)
             axs[i, 3].set_title(f"Cumulative Returns % - {stock.capitalize()}")
             axs[i, 3].set_xlabel('Episodes')
             axs[i, 3].set_ylabel('Return %')
             axs[i, 3].grid(True)
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
     
     plt.tight_layout()
     plt.show()
-
-
 
 
 plot_training_across_stocks(training_results)

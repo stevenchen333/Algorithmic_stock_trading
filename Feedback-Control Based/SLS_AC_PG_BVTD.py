@@ -16,7 +16,7 @@ class TradingEnvironment(gym.Env):
     """
     A trading environment that implements the double linear policy from the paper.
     """
-    def __init__(self, data_dict, ticker='NVDA', initial_balance=100000, transaction_cost=0.0, alpha=0.5,
+    def __init__(self, data_dict, ticker='NVDA', initial_balance=100000, transaction_cost=0.0001, alpha=0.5,
                 window_size=10, max_steps=252, decay_factor=1):
         super(TradingEnvironment, self).__init__()
         
@@ -29,6 +29,9 @@ class TradingEnvironment(gym.Env):
         self.alpha = alpha  # Allocation constant
         self.max_steps = max_steps
         self.decay_factor = decay_factor  # Decay factor for historical price ratios
+        self.K_max = 2.0  # Maximum feedback gain
+        self.action_space = spaces.Box(low=0, high=self.K_max, shape=(1,), dtype=np.float32)
+        
         
         # Check if ticker exists in data_dict
         if ticker not in data_dict:
@@ -101,6 +104,14 @@ class TradingEnvironment(gym.Env):
         self.reset()
         
     def reset(self):
+        # Initialize SLS control parameters
+        self.I0 = 1.0  # Initial investment intensity
+        self.K = 1.0   # Feedback gain constant
+
+        # Cumulative gain-loss tracking for long and short
+        self.g_L = 0.0
+        self.g_S = 0.0
+
         # Calculate max_start ensuring it's not negative
         available_steps = len(self.returns_data) - self.max_steps - self.window_size
         max_start = max(self.window_size, available_steps)
@@ -141,8 +152,11 @@ class TradingEnvironment(gym.Env):
             c = self.close_prices[idx]
             o = self.open_prices[idx]
             
-
-            decayed_ratio = c / o  # Use original ratio if denominator is too small
+            # Calculate decayed price ratio: (c-decay)/(o-decay)
+            if o - decay > 0:  # Avoid division by zero or negative
+                decayed_ratio = (c - decay) / (o - decay)
+            else:
+                decayed_ratio = c / o  # Use original ratio if denominator is too small
                 
             price_ratios_history.append(decayed_ratio)
         
@@ -165,79 +179,73 @@ class TradingEnvironment(gym.Env):
             reward: Calculated reward value
         """
         # 1. Base reward for account value change (main objective)
-        base_reward = np.log(new_V / old_V + 1e-6)  # Percentage return
-        kum_reward = np.log(new_V / init_V + 1e-6)
-
-        zero_penalty = -0.5 if abs(w)< 0.05 else 0
+        base_reward = (new_V - old_V) - lambd * sd_V  # Percentage return
+        kum_reward = (new_V - init_V)
         
         # Total reward
-        reward = kum_reward + base_reward +zero_penalty
+        reward = kum_reward + base_reward
         
         return reward
 
     # Modified step method for TradingEnvironment
     def step(self, action):
-        """Modified step function with improved reward calculation"""
-        # Unpack action
+        """Step function implementing the Simultaneous Long-Short (SLS) Controller"""
+        # Get K from action
+        K = float(action[0])
+        self.K = K  # Store current K
 
-
-        init_V = self.initial_balance
-        w = float(action[0])
-        self.current_w = w
-        
         # Check if we're at the end of data
         if self.current_step >= len(self.returns_data) - 1:
-            # Handle end of data - return terminal state
             done = True
             observation = self._get_observation()
-            return observation, 0, done, {'account_value': self.V, 'return': 0, 
-                                        'long_value': self.V_L, 'short_value': self.V_S, 'weight': w}
-        
+            return observation, 0, done, {
+                'account_value': self.V,
+                'return': 0,
+                'long_value': self.V_L,
+                'short_value': self.V_S,
+                'K': K  # Return K instead of w
+            }
+
         # Get current return
         X = self.returns_data[self.current_step]
 
-        # Calculate positions based on double linear policy
-        pi_L = w * self.V_L  # Long position
-        pi_S = -w * self.V_S  # Short position
-        
-        # Apply transaction costs
+        # Update gain-loss functions
+        self.g_L += X
+        self.g_S += -X
+
+        # Compute investment levels from SLS feedback using K from action
+        I_L = self.I0 + K * self.g_L
+        I_S = -self.I0 - K * self.g_S
+
+        # Apply transaction costs and update portfolios
         epsilon = self.transaction_cost
-        
-        # Store previous value for reward calculation
         self.prev_V = self.V
-        
-        # Update account values according to Equation (2) in the paper
-        self.V_L = self.V_L + X * pi_L - epsilon * pi_L
-        self.V_S = self.V_S + X * pi_S - epsilon * abs(pi_S)
+
+        self.V_L += X * I_L - epsilon * abs(I_L)
+        self.V_S += X * I_S - epsilon * abs(I_S)
         self.V = self.V_L + self.V_S
-        
-        # Update value history and calculate sd_V
+
+        # Track value history and compute reward
         self.value_history.append(self.V)
-        sd_V = np.std(self.value_history) if len(self.value_history) >= 2 else 0
-        
-        # Calculate improved reward
-        reward = self.improved_reward_function(w, self.prev_V, self.V, sd_V, init_V)
-        
-        # Move to next step
+        sd_V = np.std(self.value_history) if len(self.value_history) > 1 else 0
+        reward = self.improved_reward_function(K, self.prev_V, self.V, sd_V, self.initial_balance)
+
+        # Step forward
         self.current_step += 1
         self.steps_taken += 1
-        
-        # Check if done
-        done = (self.steps_taken >= self.max_steps) or (self.V <= 0)
-        
-        # Get new observation
+        done = self.steps_taken >= self.max_steps or self.V <= 0
+
+        # Observation and info
         observation = self._get_observation()
-        
-        # Return additional info
         info = {
             'account_value': self.V,
             'return': X,
             'long_value': self.V_L,
             'short_value': self.V_S,
-            'weight': w
+            'K': K
         }
-        
         return observation, reward, done, info
+
     
     def render(self, mode='human'):
         pass  # We'll implement visualization separately
@@ -252,32 +260,7 @@ class ReplayBuffer:
     def sample(self, batch_size):
         if batch_size > len(self.buffer):
             batch_size = len(self.buffer)
-            
-        # First, select a certain percentage of zero/near-zero action samples
-        zero_samples = [i for i, exp in enumerate(self.buffer) if abs(exp[1][0]) < 0.1]
-        mid_samples = [i for i, exp in enumerate(self.buffer) if 0.1 <= abs(exp[1][0]) <= 0.7]
-        high_samples = [i for i, exp in enumerate(self.buffer) if abs(exp[1][0]) > 0.7]
-        
-        # Balance the batch
-        n_zero = min(int(batch_size * 0.3), len(zero_samples))
-        n_mid = min(int(batch_size * 0.4), len(mid_samples))
-        n_high = min(batch_size - n_zero - n_mid, len(high_samples))
-        
-        # Fill remaining slots if any category is underrepresented
-        remaining = batch_size - n_zero - n_mid - n_high
-        if remaining > 0:
-            all_indices = list(range(len(self.buffer)))
-            remaining_indices = random.sample(all_indices, remaining)
-            selected_indices = (random.sample(zero_samples, n_zero) + 
-                                random.sample(mid_samples, n_mid) + 
-                                random.sample(high_samples, n_high) + 
-                                remaining_indices)
-        else:
-            selected_indices = (random.sample(zero_samples, n_zero) + 
-                            random.sample(mid_samples, n_mid) + 
-                            random.sample(high_samples, n_high))
-        
-        batch = [self.buffer[i] for i in selected_indices]
+        batch = random.sample(self.buffer, batch_size)
         states, actions, rewards, next_states, dones = zip(*batch)
         return (np.array(states), np.array(actions), 
                 np.array(rewards), np.array(next_states), 
@@ -301,9 +284,9 @@ class LinearPolicyGradientAgent:
         self.lambda_val = 0.9   # TD(λ) parameter
         self.alpha = 0.001      # Learning rate for policy parameters
         self.alpha_v = 0.01     # Learning rate for value function
-        self.sigma = 0.4        # Standard deviation for exploration
-        self.exploration_decay = 0.999  # Decay rate for exploration
-        self.min_sigma = 0.15
+        self.sigma = 0.3        # Standard deviation for exploration
+        self.exploration_decay = 0.995  # Decay rate for exploration
+        self.min_sigma = 0.1
         self.episodes_count = 0   # Minimum exploration
         
         # Initialize policy parameters (θ)
@@ -324,7 +307,7 @@ class LinearPolicyGradientAgent:
     def get_action(self, state):
         """Get action using linear policy with Gaussian exploration"""
         # Calculate mean of policy distribution (linear function of state)
-        action_mean = np.dot(state, self.theta)*1.0
+        action_mean = np.dot(state, self.theta)
         
         # Bound the action mean between 0 and action_bound
         action_mean = np.clip(action_mean, 0, self.action_bound)
@@ -402,9 +385,7 @@ class LinearPolicyGradientAgent:
         policy_update_norm = np.linalg.norm(policy_update)
         if policy_update_norm > 1.0:
             policy_update = policy_update / policy_update_norm
-        l2_reg = 0.001 * np.sum(self.theta**2)
-        policy_update -= l2_reg * self.theta
-    
+        
         # Update parameters with adaptive learning rates
         effective_alpha = self.alpha * (1.0 / (1.0 + 0.01 * self.episodes_count))
         effective_alpha_v = self.alpha_v * (1.0 / (1.0 + 0.01 * self.episodes_count))
@@ -529,7 +510,7 @@ def evaluate_agent(env, agent, episodes=10):
             
             # Record metrics
             total_reward += reward
-            episode_weights.append(info['weight'])
+            episode_weights.append(info['K'])
             episode_returns.append(info['return'])
             
             # Move to next state
