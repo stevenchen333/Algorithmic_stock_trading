@@ -2,190 +2,106 @@ import numpy as np
 from AC_PG_BVTD import TradingEnvironment, LinearPolicyGradientAgent,train_agent, evaluate_agent, plot_results
 import matplotlib.pyplot as plt
 import json
-
-
-#TODO: Instead of training in BGM, train on TOP 10 stocks in SPY from https://finance.yahoo.com/quote/SPY/
-# def simulate_realistic_market_data(n_days=2000, stock='normal'):
-#     """
-#     Simulate realistic stock returns using stock-specific GBM parameters
-    
-#     Parameters:
-#     - n_days: Number of trading days to simulate
-#     - stock: Market stock ('bull', 'bear', 'normal', 'volatile', or 'random')
-    
-#     Returns:
-#     - returns: Daily returns
-#     - prices: Corresponding price series
-#     - params: Dictionary of parameters used
-#     """
-#     # Define realistic parameters for different market stocks
-#     stocks = {
-#         'bull': {
-#             'mu': 0.0007,           # ~18% annualized return
-#             'sigma': 0.012,         # ~19% annualized volatility
-#             'jump_intensity': 0.02, # Rare jumps
-#             'jump_size': 0.02       # Small jumps
-#         },
-#         'bear': {
-#             'mu': -0.0005,          # ~-12% annualized return
-#             'sigma': 0.018,         # ~28% annualized volatility
-#             'jump_intensity': 0.04, # More frequent jumps
-#             'jump_size': 0.03       # Moderate jumps
-#         },
-#         'normal': {
-#             'mu': 0.0003,           # ~8% annualized return
-#             'sigma': 0.01,          # ~16% annualized volatility
-#             'jump_intensity': 0.03, # Occasional jumps
-#             'jump_size': 0.02       # Small jumps
-#         },
-#         'volatile': {
-#             'mu': 0.0001,           # ~2.5% annualized return
-#             'sigma': 0.025,         # ~40% annualized volatility
-#             'jump_intensity': 0.06, # Frequent jumps
-#             'jump_size': 0.04       # Larger jumps
-#         }
-#     }
-    
-#     # Choose stock parameters
-#     if stock == 'random':
-#         # Randomly select a stock for each segment
-#         n_segments = np.random.randint(3, 7)  # 3-6 different stocks
-#         segment_length = n_days // n_segments
-#         returns = np.array([])
-        
-#         for i in range(n_segments):
-#             chosen_stock = np.random.choice(['bull', 'bear', 'normal', 'volatile'])
-#             stock_params = stocks[chosen_stock]
-#             segment_returns = simulate_segment(
-#                 segment_length, 
-#                 stock_params['mu'],
-#                 stock_params['sigma'],
-#                 stock_params['jump_intensity'],
-#                 stock_params['jump_size']
-#             )
-#             returns = np.append(returns, segment_returns)
-        
-#         # Trim or extend to exact length
-#         if len(returns) > n_days:
-#             returns = returns[:n_days]
-#         elif len(returns) < n_days:
-#             # Generate remaining days with last stock
-#             remaining = n_days - len(returns)
-#             extra_returns = simulate_segment(
-#                 remaining,
-#                 stock_params['mu'],
-#                 stock_params['sigma'],
-#                 stock_params['jump_intensity'],
-#                 stock_params['jump_size']
-#             )
-#             returns = np.append(returns, extra_returns)
-#     else:
-#         # Use specific stock
-#         stock_params = stocks[stock]
-#         returns = simulate_segment(
-#             n_days,
-#             stock_params['mu'],
-#             stock_params['sigma'],
-#             stock_params['jump_intensity'],
-#             stock_params['jump_size']
-#         )
-    
-#     # Calculate price series (starting at 100)
-#     prices = 100 * np.cumprod(1 + returns)
-    
-#     # Return both returns and prices
-#     return returns, prices, stock_params
-
-# def simulate_segment(n_days, mu, sigma, jump_intensity, jump_size):
-"""Simulate a market segment with consistent parameters"""
-    # Generate base returns
-    # base_returns = np.random.normal(mu, sigma, n_days)
-    
-    # # Generate jumps
-    # jumps = np.random.binomial(1, jump_intensity, n_days) * np.random.choice([-1, 1], n_days) * jump_size
-    
-    # # Combine and clip to avoid unrealistic returns
-    # returns = base_returns + jumps
-    # returns = np.clip(returns, -0.15, 0.15)  # Limit daily moves to ±15%
-    
-    # return returns
-
-def days_randomizer(data_dict, stock, window_size=10):
-    """
-    Randomize the length of training data and return a sliced dataset
-    
-    Args:
-        data_dict (dict): Dictionary containing stock data
-        stock (str): Stock ticker
-        window_size (int): Window size for observation
-        
-    Returns:
-        dict: Sliced data dictionary with randomized length
-    """
-    # Get total available data length
-    total_length = len(data_dict[stock]['open'])
-    
-    # Generate random number of days between 252 (1 year) and 700 (~ 2.8 years)
-    n_days = np.random.randint(400, 701)
-    
-    # Ensure we have enough data
-    if total_length <= n_days + window_size:
-        n_days = total_length - window_size - 1
-        start_idx = 0
-    else:
-        # Calculate valid starting points
-        max_start_idx = total_length - n_days - window_size
-        # Choose random starting point
-        start_idx = np.random.randint(0, max_start_idx)
-    
-    # Create sliced dataset
-    sliced_data = {
-        stock: {
-            'open': data_dict[stock]['open'][start_idx:start_idx + n_days + window_size],
-            'close': data_dict[stock]['close'][start_idx:start_idx + n_days + window_size],
-            'high': data_dict[stock]['high'][start_idx:start_idx + n_days + window_size],
-            'low': data_dict[stock]['low'][start_idx:start_idx + n_days + window_size],
-            'volume': data_dict[stock]['volume'][start_idx:start_idx + n_days + window_size],
-            'dates': data_dict[stock]['dates'][start_idx:start_idx + n_days + window_size]
-        }
-    }
-    
-    return sliced_data, n_days, start_idx
+import pandas as pd
 
 
 
-def train_agent_across_stocks(training_path, agent_class, epochs_per_stock=1000):
-    with open (training_path, "r") as f:
+
+
+def train_agent_across_stocks(training_path, agent_class, epochs_per_stock=1000, include_gbm=True):
+    # Load real stock data
+    with open(training_path, "r") as f:
         training_data = json.load(f)
-
+    
     stocks_curriculum = list(training_data.keys())
     
+    # Add simulated GBM with jumps if requested
+    if include_gbm:
+        # Define different market conditions
+        market_scenarios = [
+            {
+                "name": "bull",
+                "mu": 0.08,
+                "sigma": 0.015,
+                "jump_intensity": 0.01,
+                "jump_size": 0.02,
+            },
+            {
+                "name": "bear",
+                "mu": -0.05,
+                "sigma": 0.02,
+                "jump_intensity": 0.05,
+                "jump_size": 0.04,
+            },
+            {
+                "name": "volatile",
+                "mu": 0.01,
+                "sigma": 0.05,
+                "jump_intensity": 0.1,
+                "jump_size": 0.06,
+            },
+            {
+                "name": "calm",
+                "mu": 0.03,
+                "sigma": 0.01,
+                "jump_intensity": 0.005,
+                "jump_size": 0.01,
+            },
+        ]
+
+        for i, scenario in enumerate(market_scenarios):
+            # Generate GBM with jumps data
+            gbm_data = generate_gbm_with_jumps(
+                n_steps=500,
+                mu=scenario["mu"],
+                sigma=scenario["sigma"],
+                jump_intensity=scenario["jump_intensity"],
+                jump_size=scenario["jump_size"],
+                initial_price=100.0,
+            )
+            stock_name = f"GBM_{scenario['name']}_{i}"
+            training_data[stock_name] = gbm_data
+            stocks_curriculum.append(stock_name)
+
     # Initialize storage
     all_training_results = {}
     agent = None
     action_size = 1
     
     for stock in stocks_curriculum:
-        print(f"\n===== Training on {stock.upper()} stock =====")
+        print(f"\n===== Training on {stock.upper()} =====")
         print(f"Training for {epochs_per_stock} epochs")
-        training_data_slice, n_days, start_idx = days_randomizer(training_data, stock)
-        # Create environment
-        env = TradingEnvironment(
-            data_dict=training_data,
-            ticker = stock,
-            initial_balance=1000,
-            transaction_cost=0.0,
-            alpha=0.5,
-            window_size=10,
-            max_steps=n_days - 11  # One year of trading days
-        )
+        
+        # Create environment - handle GBM differently if needed
+        if stock == 'GBM':
+            # For GBM, we might want different parameters
+            env = TradingEnvironment(
+                data_dict=training_data,
+                ticker=stock,
+                initial_balance=1000,
+                transaction_cost=0.001,  # Slightly higher cost for simulated data
+                alpha=0.5,
+                window_size=5,
+                max_steps=252-6
+            )
+        else:
+            # For real stocks
+            env = TradingEnvironment(
+                data_dict=training_data,
+                ticker=stock,
+                initial_balance=1000,
+                transaction_cost=0.0,
+                alpha=0.5,
+                window_size=5,
+                max_steps=252-6
+            )
         
         # Initialize agent if first stock
         if agent is None:
             state_size = env.observation_space.shape[0]
             agent = agent_class(state_size, action_size, env.w_max)
         
-        # Train agent on this stock
+        # Train agent on this stock/GBM
         rewards, avg_rewards, asset_values = train_agent(
             env, agent, episodes=epochs_per_stock
         )
@@ -200,20 +116,20 @@ def train_agent_across_stocks(training_path, agent_class, epochs_per_stock=1000)
             next_state, reward, done, _ = env.step(action)
             state = next_state
         
-        # Store results for this stock
+        # Store results
         all_training_results[stock] = {
             'rewards': rewards,
             'avg_rewards': avg_rewards,
             'asset_values': asset_values,
-            'actions': actions_list  # Store collected actions
+            'actions': actions_list
         }
         
-        # Final evaluation
-        eval_rewards, eval_values, weights_history, env_returns = evaluate_agent(env, agent, episodes=100)
-        print(f"\nFinal evaluation on {stock} stock - "
+        # Evaluation
+        eval_rewards, eval_values, weights_history, env_returns = evaluate_agent(env, agent, episodes=10)
+        print(f"\nFinal evaluation on {stock} - "
             f"Avg Final Value: {np.mean(eval_values):.2f}")
         
-        # Save stock-specific model
+        # Save model
         agent.save(f"agent_{stock}_final.npz")
     
     # Save final model
@@ -221,9 +137,38 @@ def train_agent_across_stocks(training_path, agent_class, epochs_per_stock=1000)
     
     return agent, all_training_results
 
-agent, training_results = train_agent_across_stocks(training_path="trainstock_data_2015-01-01_to_2024-01-01.json",
+def generate_gbm_with_jumps(n_steps=500, mu=-0.0005, sigma=0.02, 
+                        jump_intensity=0.004, jump_size=0.004, 
+                        initial_price=100.0):
+    """Generate GBM with jumps data in the required dictionary format"""
+    np.random.seed(42)
+    dates = pd.date_range(start="2024-01-01", periods=n_steps).strftime('%Y-%m-%d').tolist()
+    
+    # Generate returns
+    normal_returns = np.random.normal(mu, sigma, n_steps)
+    jumps = np.random.binomial(1, jump_intensity, n_steps) * \
+            np.random.choice([-1, 1], n_steps) * jump_size
+    returns = normal_returns + jumps
+    returns = np.clip(returns, -0.2, 0.2)
+    
+    # Generate prices
+    prices = initial_price * np.cumprod(1 + returns)
+    
+    return {
+        'open': prices.tolist(),
+        'close': prices.tolist(),
+        'high': (prices * 1.01).tolist(),  # Add small variation
+        'low': (prices * 0.99).tolist(),
+        'volume': np.random.lognormal(8, 1, n_steps).astype(int).tolist(),
+        'dates': dates
+    }
+
+# Usage
+agent, training_results = train_agent_across_stocks(
+    training_path="trainstock_data_2015-01-01_to_2024-01-01.json",
     agent_class=LinearPolicyGradientAgent, 
-    epochs_per_stock=1000
+    epochs_per_stock=100,
+    include_gbm=True  # Now includes GBM with jumps in training
 )
 
 # Visualize training results
@@ -298,7 +243,7 @@ def test_on_real_data(agent, real_returns_data):
         transaction_cost=0.0,
         alpha=0.5,
         window_size=10,
-        max_steps=len(real_returns_data) - 11
+        max_steps=252
     )
     
     # Evaluate agent

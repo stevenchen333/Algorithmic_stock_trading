@@ -13,22 +13,36 @@ np.random.seed(42)
 random.seed(42)
 
 class TradingEnvironment(gym.Env):
-    """
-    A trading environment that implements the double linear policy from the paper.
-    """
+
+    '''
+    This is a class for defining reinforcment learning environment (or POMDP) for Double Linear Trading.
+
+    Params:
+        - data_dict: is a dictionrary of dictionaries of stocks of prices and dates
+        - ticker: ticker of stocks to extract from data_dict
+        - initial_balance: the initial account value for DLP (i.e., V0)
+        - transaction_cost: transaction cost defined in DLP paper
+        - alpha : allocation cost
+        - window_size: Size of observatio windows, that is only consider t-5 stock price at t 
+        - max_steps: Maximum steps per episode
+
+
+    '''
+
     def __init__(self, data_dict, ticker='NVDA', initial_balance=100000, transaction_cost=0.0, alpha=0.5,
-                window_size=10, max_steps=252, decay_factor=1):
+                window_size=5, max_steps=252):
         super(TradingEnvironment, self).__init__()
         
         # Environment parameters
         self.data_dict = data_dict
         self.ticker = ticker
-        self.window_size = window_size
+        
+        # Reduce window_size to 3-5 days instead of 10
+        self.window_size = min(5, window_size)  # Limit to 5 days at most
         self.initial_balance = initial_balance
         self.transaction_cost = transaction_cost
         self.alpha = alpha  # Allocation constant
         self.max_steps = max_steps
-        self.decay_factor = decay_factor  # Decay factor for historical price ratios
         
         # Check if ticker exists in data_dict
         if ticker not in data_dict:
@@ -76,6 +90,9 @@ class TradingEnvironment(gym.Env):
             where=self.open_prices != 0
         )
         
+        # Add additional price data features
+        self.daily_volatility = self._calculate_daily_volatility()
+        
         # Compute bounds for returns, handling edge cases
         self.X_min = np.min(self.returns_data) if len(self.returns_data) > 0 else -0.1
         self.X_max = np.max(self.returns_data) if len(self.returns_data) > 0 else 0.1
@@ -88,17 +105,22 @@ class TradingEnvironment(gym.Env):
         self.w_max = min(1/(1+self.transaction_cost), 1/(self.X_max+self.transaction_cost))
         self.action_space = spaces.Box(low=0, high=self.w_max, shape=(1,), dtype=np.float32)
         
-        # Update observation space dimension to include window_size returns + window_size price ratios
-        obs_dim = self.window_size * 2
+        # Update observation space dimension to include window_size returns + window_size price ratios + additional features
+        # Add more features: returns, price ratios, high/low ratio, volume change
+        obs_dim = self.window_size * 4  # returns, price ratios, high/low ratio, volume change
         observation_high = np.ones(obs_dim) * np.finfo(np.float32).max
         observation_low = np.ones(obs_dim) * np.finfo(np.float32).min
         self.observation_space = spaces.Box(low=observation_low, high=observation_high, dtype=np.float32)
         
         # Add account value history tracking
-        self.value_history = deque(maxlen=window_size)
+        self.value_history = deque(maxlen=self.window_size)
         
         # Initialize state variables
         self.reset()
+    
+    def _calculate_daily_volatility(self):
+        """Calculate daily volatility (high-low range)"""
+        return (self.high_prices - self.low_prices) / ((self.high_prices + self.low_prices) / 2)
         
     def reset(self):
         # Calculate max_start ensuring it's not negative
@@ -126,52 +148,47 @@ class TradingEnvironment(gym.Env):
         return self._get_observation()
     
     def _get_observation(self):
-        """Get current observation including decayed price ratios and returns history"""
-        # Returns history features
+        """Get current observation with enhanced features based on recent data only"""
+        # Returns history (past window_size days)
         returns_history = self.returns_data[self.current_step-self.window_size:self.current_step]
         
-        # Get price ratios history with decay
-        price_ratios_history = []
-        for i in range(self.window_size):
-            idx = self.current_step - self.window_size + i
-            # Apply decay factor based on time distance
-            decay = self.decay_factor ** (self.window_size - i - 1)
-            
-            # Apply decay to both close and open prices
-            c = self.close_prices[idx]
-            o = self.open_prices[idx]
-            
-
-            decayed_ratio = c / o  # Use original ratio if denominator is too small
-                
-            price_ratios_history.append(decayed_ratio)
+        # Price ratios history (past window_size days)
+        price_ratios_history = self.price_ratios[self.current_step-self.window_size:self.current_step]
         
-        # Combine features
-        observation = np.concatenate([returns_history, price_ratios_history])
+        # High/Low ratio history (measure of intraday volatility)
+        hl_ratio_history = self.daily_volatility[self.current_step-self.window_size:self.current_step]
+        
+        # Volume changes (normalized)
+        volume_history = self.volumes[self.current_step-self.window_size:self.current_step]
+        if np.min(volume_history) > 0:
+            volume_changes = np.diff(volume_history) / volume_history[:-1]
+            volume_changes = np.insert(volume_changes, 0, 0)  # Pad first element
+        else:
+            volume_changes = np.zeros_like(volume_history)
+        
+        # Combine all features
+        observation = np.concatenate([
+            returns_history, 
+            price_ratios_history, 
+            hl_ratio_history,
+            volume_changes
+        ])
+        
         return observation
     
-    # Improved reward function for the TradingEnvironment
-    def improved_reward_function(self, w, old_V, new_V, sd_V, init_V, lambd=0.2):
-        """
-        Compute a reward that better incentivizes risk-adjusted returns.
-        
-        Args:
-            X: Current market return
-            w: Current weight (action)
-            old_V: Previous account value 
-            new_V: New account value
-            
-        Returns:
-            reward: Calculated reward value
-        """
-        # 1. Base reward for account value change (main objective)
+    def improved_reward_function(self, w, old_V, new_V, init_V, lambd=0.2):
+
         base_reward = np.log(new_V / old_V + 1e-6)  # Percentage return
         kum_reward = np.log(new_V / init_V + 1e-6)
 
-        zero_penalty = -0.5 if abs(w)< 0.05 else 0
+        # Penalty for not taking positions (to encourage exploration)
+        zero_penalty = -0.1 if abs(w) < 0.05 else 0
+        one_penalty = -0.1 if abs(w) > 0.95 else 0
+        
+        # Add small incentive for risk-adjusted return
         
         # Total reward
-        reward = kum_reward + base_reward +zero_penalty
+        reward = kum_reward + base_reward + zero_penalty 
         
         return reward
 
@@ -179,8 +196,6 @@ class TradingEnvironment(gym.Env):
     def step(self, action):
         """Modified step function with improved reward calculation"""
         # Unpack action
-
-
         init_V = self.initial_balance
         w = float(action[0])
         self.current_w = w
@@ -213,14 +228,15 @@ class TradingEnvironment(gym.Env):
         
         # Update value history and calculate sd_V
         self.value_history.append(self.V)
-        sd_V = np.std(self.value_history) if len(self.value_history) >= 2 else 0
         
         # Calculate improved reward
-        reward = self.improved_reward_function(w, self.prev_V, self.V, sd_V, init_V)
+        reward = self.improved_reward_function(w, self.prev_V, self.V, init_V)
         
         # Move to next step
         self.current_step += 1
         self.steps_taken += 1
+        portfolio_returns = (self.V - self.prev_V ) / self.prev_V if self.prev_V != 0 else 0
+
         
         # Check if done
         done = (self.steps_taken >= self.max_steps) or (self.V <= 0)
@@ -231,7 +247,7 @@ class TradingEnvironment(gym.Env):
         # Return additional info
         info = {
             'account_value': self.V,
-            'return': X,
+            'return': portfolio_returns,
             'long_value': self.V_L,
             'short_value': self.V_S,
             'weight': w
@@ -239,10 +255,13 @@ class TradingEnvironment(gym.Env):
         
         return observation, reward, done, info
     
-    def render(self, mode='human'):
-        pass  # We'll implement visualization separately
+
 
 class ReplayBuffer:
+    
+    '''
+    This class is used for replaybuffer used for experience replay. More specifically, this class provides functionality used for experience replay.
+    '''
     def __init__(self, capacity=10000):
         self.buffer = deque(maxlen=capacity)
     
@@ -288,7 +307,7 @@ class ReplayBuffer:
 
 class LinearPolicyGradientAgent:
     """
-    Policy Gradient agent with linear function approximation and TD-lambda for trading
+    Policy Gradient agent with linear function approximation and backward view TD-lambda 
     """
     def __init__(self, state_size, action_size, action_bound):
         self.state_size = state_size
@@ -301,10 +320,10 @@ class LinearPolicyGradientAgent:
         self.lambda_val = 0.9   # TD(λ) parameter
         self.alpha = 0.001      # Learning rate for policy parameters
         self.alpha_v = 0.01     # Learning rate for value function
-        self.sigma = 0.4        # Standard deviation for exploration
+        self.sigma = 0.05       # Reduced std deviation for exploration (from 0.4)
         self.exploration_decay = 0.999  # Decay rate for exploration
-        self.min_sigma = 0.15
-        self.episodes_count = 0   # Minimum exploration
+        self.min_sigma = 0.01    # Reduced min sigma (from 0.15)
+        self.episodes_count = 0 # Episodes counter
         
         # Initialize policy parameters (θ)
         self.theta = np.zeros(state_size)
@@ -314,17 +333,19 @@ class LinearPolicyGradientAgent:
         
         # Initialize eligibility traces
         self.e_theta = np.zeros_like(self.theta)  # Eligibility trace for policy
-        self.e_w = np.zeros_like(self.w)   
-        self.replay_buffer = ReplayBuffer(capacity=50000)
+        self.e_w = np.zeros_like(self.w) 
+
+
+        self.replay_buffer = ReplayBuffer(capacity=5000)
         self.batch_size = 32
         self.min_experiences = 1000  # Min experiences before training
         self.update_every = 4        # Update network every N steps
-        self.step_count = 0       # Eligibility trace for value function
+        self.step_count = 0       # Step counter
         
     def get_action(self, state):
         """Get action using linear policy with Gaussian exploration"""
         # Calculate mean of policy distribution (linear function of state)
-        action_mean = np.dot(state, self.theta)*1.0
+        action_mean = np.dot(state, self.theta)
         
         # Bound the action mean between 0 and action_bound
         action_mean = np.clip(action_mean, 0, self.action_bound)
@@ -416,15 +437,15 @@ class LinearPolicyGradientAgent:
         if done:
             self.episodes_count += 1
             
-            # Adaptive exploration decay
-            if self.episodes_count % 5 == 0:
-                progress = min(1.0, self.episodes_count / 5000)
+            # Faster adaptive exploration decay for shorter time frames
+            if self.episodes_count % 3 == 0:  # Check more frequently (was 5)
+                progress = min(1.0, self.episodes_count / 3000)  # Faster convergence (was 5000)
                 target_sigma = self.min_sigma + (1.0 - progress) * (0.2 - self.min_sigma)
                 self.sigma = self.sigma * 0.95 + target_sigma * 0.05
             
             # Parameter noise with decay
-            if self.episodes_count % 50 == 0:
-                noise_magnitude = 0.01 * (1.0 - min(1.0, self.episodes_count / 5000))
+            if self.episodes_count % 30 == 0:  # More frequent noise (was 50)
+                noise_magnitude = 0.01 * (1.0 - min(1.0, self.episodes_count / 3000))
                 self.theta += np.random.normal(0, noise_magnitude, size=self.theta.shape)
 
         return np.mean(deltas)  # Return mean TD error for monitoring
@@ -683,7 +704,7 @@ def load_market_data(file_path):
         return {}
 
 
-def train_agent_across_stocks(data_dict, window_size=10, max_steps=252, decay_factor=1, 
+def train_agent_across_stocks(data_dict, window_size=10, max_steps=252, 
                         episodes_per_stock=1000, tickers=None):
     """
     Train an agent across multiple stocks for better generalization.
@@ -692,7 +713,6 @@ def train_agent_across_stocks(data_dict, window_size=10, max_steps=252, decay_fa
         data_dict: Dictionary containing market data for multiple tickers
         window_size: Size of observation window
         max_steps: Maximum steps per episode
-        decay_factor: Decay factor for historical prices
         episodes_per_stock: Number of episodes to train on each stock
         tickers: List of ticker symbols to use (if None, use all available)
     
@@ -714,9 +734,7 @@ def train_agent_across_stocks(data_dict, window_size=10, max_steps=252, decay_fa
         transaction_cost=0.0001,
         alpha=0.5,
         window_size=window_size,
-        max_steps=max_steps,
-        decay_factor=decay_factor
-    )
+        max_steps=max_steps    )
     
     # Create policy gradient agent
     state_size = env.observation_space.shape[0]
@@ -738,8 +756,7 @@ def train_agent_across_stocks(data_dict, window_size=10, max_steps=252, decay_fa
             transaction_cost=0.0001,
             alpha=0.5,
             window_size=window_size,
-            max_steps=max_steps,
-            decay_factor=decay_factor
+            max_steps=max_steps
         )
         
         # Train agent on this ticker
@@ -759,8 +776,7 @@ def train_agent_across_stocks(data_dict, window_size=10, max_steps=252, decay_fa
         transaction_cost=0.0001,
         alpha=0.5,
         window_size=window_size,
-        max_steps=max_steps,
-        decay_factor=decay_factor
+        max_steps=max_steps
     )
     
     # Save the model before evaluation
@@ -793,7 +809,6 @@ def main():
         alpha=0.5,  # Equal allocation to long and short
         window_size=10,
         max_steps=252,  # Roughly one trading year
-        decay_factor=1  # Decay factor for historical price ratios
     )
     
     # Create policy gradient agent with linear function approximation

@@ -18,106 +18,6 @@ data_df = pd.DataFrame({
     'times': data['SPY']['dates'],
     'spy': data['SPY']['close']
 })
-def simulate_market_data(n_steps=500,mu = 0.0008, sigma = 0.02,
-                        jump_intensity=0.02, jump_size=0.03,
-                        initial_price=100.0):
-    normal_returns = np.random.normal(mu, sigma, n_steps)
-    
-    # Generate jumps
-    jumps = np.random.binomial(1, jump_intensity, n_steps) * \
-            np.random.choice([-1, 1], n_steps) * jump_size
-    
-    # Combine normal returns with jumps
-    returns = normal_returns + jumps
-    returns = np.clip(returns, -0.2, 0.2)  # Bound returns
-    
-    # Convert returns to price path
-    prices = initial_price * np.cumprod(1 + returns)
-    
-    return returns, prices
-
-
-returns_gbm, price_gbm = simulate_market_data()
-
-
-
-
-# Logarithmic weight function from your question
-def w1(t):
-    return 0.8
-def w2(t):
-    return np.log(1+t/252*(np.exp(1)-1))
-def w3(t):
-    denominator = (0.02 / 252) * t - 0.01
-    if denominator == 0:
-        return 0  # or handle the division by zero case as appropriate for your application
-    return 0.5 * (np.sin(1 / denominator) + 1)
-
-
-
-def w4(t):
-    """
-    Generate weights sampled from a normal distribution with mean 0.9,
-    clipped between 0.85 and 1.0
-    
-    Args:
-        t: Time step (not used but kept for consistency with other weight functions)
-    Returns:
-        float: Clipped random weight
-    """
-    w = np.random.normal(loc=0.9, scale=0.1, size=1)[0]  # Sample from normal dist
-    w = np.clip(w, 1.0, 1.0)  # Clip values between 0.85 and 1.0
-    return w
-
-
-
-
-
-np.random.seed(42)  # For reproducibility
-
-dlp1 = DLP(stocks = data_df, w = w1, init_value=200, return_weights=True)
-_,_, v1, _,_,w_1 = dlp1.dlp()
-
-
-dlp2 = DLP(stocks = data_df, w = w2, init_value=200, return_weights=True)
-_,_, v2, _,_,w_2 = dlp2.dlp()
-
-
-dlp3 = DLP(stocks = data_df, w = w3, init_value=200, return_weights=True)
-_,_, v3, _,_,w_3 = dlp3.dlp()
-
-dlp4 = DLP(stocks = data_df, w = w4, init_value=200, return_weights=True)
-_,_, v4, _,_,w_4 = dlp4.dlp()
-
-
-
-
-
-
-
-
-env = TradingEnvironment(
-    data_dict=data,
-    ticker = "SPY",    initial_balance=200,
-    transaction_cost=0.0,
-    alpha=0.5,
-    window_size=10,
-    max_steps=len(data_df) - 11
-)
-
-# Initialize the agent with the environment's state dimension
-state_dim = env.observation_space.shape[0]  # Get state dimension from environment
-agent = LinearPolicyGradientAgent(
-    state_size=state_dim,
-    action_size=0.001,
-    action_bound=1.0  # Maximum allowed weight
-)
-
-try:
-    agent.load("multi_stock_agent_final.npz")
-    print("Loaded trained agent weights")
-except FileNotFoundError:
-    print("Trained weights not found. Using untrained agent.")
 def evaluate_agent_performance(env, agent, initial_balance=200):
     """
     Evaluate the agent's performance and return V, returns, and actions
@@ -149,7 +49,8 @@ def evaluate_agent_performance(env, agent, initial_balance=200):
     
     # Calculate performance metrics
     total_return = (portfolio_values[-1]/initial_balance - 1) * 100
-    sharpe_ratio = np.mean(returns) / np.std(returns) * np.sqrt(252)
+    excess_returns = np.array(returns) - 0  # Subtract risk-free rate
+    sharpe_ratio = np.mean(excess_returns) / np.std(excess_returns) * np.sqrt(252)
     
     results = {
         'V': np.array(portfolio_values),
@@ -160,20 +61,6 @@ def evaluate_agent_performance(env, agent, initial_balance=200):
     }
     
     return results
-
-
-
-# Get RL agent's portfolio values
-agent_results = evaluate_agent_performance(env, agent)
-v_rl = agent_results['V']
-action_rl = agent_results['actions']
-
-# Create figure with 4 subplots
-fig, axs = plt.subplots(2, 2, figsize=(12, 9))
-
-# Flatten axes for easier iteration
-axs = axs.flatten()
-
 # Plot data with twin axes
 def plot_strategy(ax, portfolio_values, strategy_name, color, ticker='SPY'):
     """
@@ -206,41 +93,25 @@ def plot_strategy(ax, portfolio_values, strategy_name, color, ticker='SPY'):
     lines2, labels2 = ax2.get_legend_handles_labels()
     ax2.legend(lines1 + lines2, labels1 + labels2, loc='upper left')
 
-# Plot each strategy
-plot_strategy(axs[0], w_1, 'Buy & Hold', 'blue')
-plot_strategy(axs[1], w_2, 'Logarithmic', 'green')
-plot_strategy(axs[2], w_3, 'Active day trading', 'orange')
-plot_strategy(axs[3], action_rl, 'RL Agent', 'red')
-
-# Set titles
-titles = ['Buy & Hold Strategy (w1)', 'Logarithmic Strategy (w2)', 
-        'Active day trading (w3)', 'RL Agent Strategy']
-for ax, title in zip(axs, titles):
-    ax.set_title(title)
-
-plt.tight_layout()
-plt.show()
-
-# Print performance metrics
-print("\nPerformance Metrics:")
-print("-" * 50)
-print(f"Buy & Hold Final Value: ${v1[-1]:.2f}")
-print(f"Logarithmic Final Value: ${v2[-1]:.2f}")
-print(f"RL Agent Final Value: ${v_rl[-1]:.2f}")
-print(f"RL Agent Sharpe Ratio: {agent_results['sharpe_ratio']:.2f}")
-
-
-
-def plot_strategy_comparison(portfolio_values_dict, stock_prices, figsize=(15, 8)):
-    """
-    Plot comparison of different trading strategies against stock price.
+def simulate_market_data(n_steps=500,mu = 0.0008, sigma = 0.02,
+                        jump_intensity=0.02, jump_size=0.03,
+                        initial_price=100.0):
+    normal_returns = np.random.normal(mu, sigma, n_steps)
     
-    Args:
-        portfolio_values_dict (dict): Dictionary of strategy names and their portfolio values
-        stock_prices (array-like): Stock price data
-        figsize (tuple): Figure size in inches
-    """
-    # Create figure
+    # Generate jumps
+    jumps = np.random.binomial(1, jump_intensity, n_steps) * \
+            np.random.choice([-1, 1], n_steps) * jump_size
+    
+    # Combine normal returns with jumps
+    returns = normal_returns + jumps
+    returns = np.clip(returns, -0.2, 0.2)  # Bound returns
+    
+    # Convert returns to price path
+    prices = initial_price * np.cumprod(1 + returns)
+    
+    return returns, prices
+def plot_strategy_comparison(portfolio_values_dict, stock_prices, figsize=(15, 8)):
+
     plt.figure(figsize=figsize)
     
     # Create main axis and its twin
@@ -269,7 +140,7 @@ def plot_strategy_comparison(portfolio_values_dict, stock_prices, figsize=(15, 8
     
     # Set labels and title
     ax1.set_xlabel('Trading Days')
-    ax1.set_ylabel('Account Value ($)')
+    ax1.set_ylabel('Cumulative Return (%)')
     ax2.set_ylabel('Stock Price ($)', color='gray')
     
     # Get labels for legend
@@ -278,7 +149,7 @@ def plot_strategy_comparison(portfolio_values_dict, stock_prices, figsize=(15, 8
     # Create legend outside the plot
     plt.legend(lines, labels, loc='center left', bbox_to_anchor=(1.15, 0.5))
     
-    plt.title('Account Value Comparison Across All Strategies')
+    plt.title('Cumulative Return Comparison Across All Strategies')
     ax1.grid(True, alpha=0.3)
     
     # Adjust layout
@@ -286,13 +157,108 @@ def plot_strategy_comparison(portfolio_values_dict, stock_prices, figsize=(15, 8
     
     return ax1, ax2
 
+
+
+
+
+
+# Logarithmic weight function from your question
+def w1(t):
+    return 0.8
+def w2(t):
+    return np.log(1+t/252*(np.exp(1)-1))
+def w3(t):
+    denominator = (0.02 / 252) * t - 0.01
+    if denominator == 0:
+        return 0  # or handle the division by zero case as appropriate for your application
+    return 0.5 * (np.sin(1 / denominator) + 1)
+
+
+
+
+
+
+
+
+np.random.seed(42)  # For reproducibility
+
+dlp1 = DLP(stocks = data_df, w = w1, init_value=200, return_weights=True)
+result_dlp1 = dlp1.dlp()
+
+
+dlp2 = DLP(stocks = data_df, w = w2, init_value=200, return_weights=True)
+result_dlp2 = dlp2.dlp()
+
+
+dlp3 = DLP(stocks = data_df, w = w3, init_value=200, return_weights=True)
+result_dlp3 = dlp3.dlp()
+
+
+
+
+
+env = TradingEnvironment(
+    data_dict=data,
+    ticker = "SPY",    initial_balance=200,
+    transaction_cost=0.0,
+    alpha=0.5,
+    window_size=10,
+    max_steps=len(data_df) - 11
+)
+
+# Initialize the agent with the environment's state dimension
+state_dim = env.observation_space.shape[0]  # Get state dimension from environment
+agent = LinearPolicyGradientAgent(
+    state_size=state_dim,
+    action_size=0.001,
+    action_bound=1.0  # Maximum allowed weight
+)
+
+try:
+    agent.load("multi_stock_agent_final.npz")
+    print("Loaded trained agent weights")
+except FileNotFoundError:
+    print("Trained weights not found. Using untrained agent.")
+
+
+
+
+# Get RL agent's portfolio values
+agent_results = evaluate_agent_performance(env, agent)
+v_rl = agent_results['V']
+action_rl = agent_results['actions']
+kum_ret_rl = [0] * (len(v_rl) + 1)
+
+kum_ret_rl[0] = 0
+
+for i in range(len(v_rl)):
+    kum_ret_rl[i] = (v_rl[i] - v_rl[0]) / v_rl[0]
+
+cumulative_max = np.maximum.accumulate(v_rl)
+drawdown = (v_rl - cumulative_max) / cumulative_max
+max_drawdown_rl = np.min(drawdown)
+
+
+
+
+print(f"Performance of DLP: \n")
+print(f"Buy and Hold{result_dlp1["metrics"]}, G&L: {result_dlp1["info"]['cumulative_returns'][-1]} ")
+print(f"Logarithmic{result_dlp2["metrics"]}, G&L: {result_dlp2["info"]['cumulative_returns'][-1]}")
+print(f"Active trading{result_dlp3["metrics"]}, G&L: {result_dlp3["info"]['cumulative_returns'][-1]}")
+
+print(f"Performance of DLP w rl: \n")
+print(f'max_drawdown: {max_drawdown_rl}, sharpe_ratio: {agent_results['sharpe_ratio']}, G&L: {kum_ret_rl[-2]}')
+
+
+
+
 # Example usage:
     # Example data
 strategies = {
-    'Buy & Hold (w1)': v1,
-    'Logarithmic (w2)': v2,
-    'Oscillating (w3)': v3,
-    'RL Agent': v_rl
+    '(w1)': result_dlp1['info']['cumulative_returns'][0:len(kum_ret_rl)],
+    '(w2)': result_dlp2['info']['cumulative_returns'][0:len(kum_ret_rl)],
+    '(w3)': result_dlp3['info']['cumulative_returns'][0:len(kum_ret_rl)],
+    'RL Agent': kum_ret_rl[0:len(kum_ret_rl)-1]
 }
 
 # Plot comparison
@@ -305,22 +271,19 @@ plt.show()
 plt.close('all')
 #---------#---------#---------#---------#---------#---------#---------#---------#---------#---------#---------#---------
 
-import json
-import pandas as pd
-import numpy as np
-from DLP import DLP
-import matplotlib.pyplot as plt
 
+returns_gbm, price_gbm = simulate_market_data()
+
+np.random.seed(435)
 # Parameters for bear market GBM with jumps
 mu = -0.001  # Negative drift for bear market
-sigma = 0.02
-jump_intensity = 0.001  # Higher chance of jumps in volatile bear market
-jump_size = 0.001
+sigma = 0.05
+jump_intensity = 0.01  # Higher chance of jumps in volatile bear market
+jump_size = 0.005
 initial_price = 100.0
 n_steps = 252
 
 # Generate GBM with jumps
-np.random.seed(42)
 normal_returns = np.random.normal(mu, sigma, n_steps)
 jumps = np.random.binomial(1, jump_intensity, n_steps) * np.random.choice([-1, 1], n_steps) * jump_size
 returns = normal_returns + jumps
@@ -350,16 +313,20 @@ data_df = pd.DataFrame({
 
 
 
-# Run DLP strategies
-np.random.seed(42)
-dlp1 = DLP(stocks=data_df, w=w1, init_value=200, return_weights=True)
-_, _, v1, _, _, w_1 = dlp1.dlp()
+dlp1 = DLP(stocks = data_df, w = w1, init_value=200, return_weights=True)
+result_dlp1 = dlp1.dlp()
 
-dlp2 = DLP(stocks=data_df, w=w2, init_value=200, return_weights=True)
-_, _, v2, _, _, w_2 = dlp2.dlp()
 
-dlp3 = DLP(stocks=data_df, w=w3, init_value=200, return_weights=True)
-_, _, v3, _, _, w_3 = dlp3.dlp()
+dlp2 = DLP(stocks = data_df, w = w2, init_value=200, return_weights=True)
+result_dlp2 = dlp2.dlp()
+
+
+dlp3 = DLP(stocks = data_df, w = w3, init_value=200, return_weights=True)
+result_dlp3 = dlp3.dlp()
+
+
+
+
 
 env = TradingEnvironment(
     data_dict=data_dict,
@@ -384,44 +351,45 @@ try:
 except FileNotFoundError:
     print("Trained weights not found. Using untrained agent.")
 
+
+
+
 # Get RL agent's portfolio values
 agent_results = evaluate_agent_performance(env, agent)
 v_rl = agent_results['V']
 action_rl = agent_results['actions']
+kum_ret_rl = [0] * (len(v_rl) + 1)
 
-# Create and show plots
-fig, axs = plt.subplots(2, 2, figsize=(12, 9))
-axs = axs.flatten()
+kum_ret_rl[0] = 0
 
-# Plot each strategy
-plot_strategy(axs[0], w_1, 'Buy & Hold', 'blue', 'gbm')
-plot_strategy(axs[1], w_2, 'Logarithmic', 'green', 'gbm')
-plot_strategy(axs[2], w_3, 'Active day trading', 'orange', 'gbm')
-plot_strategy(axs[3], action_rl, 'RL Agent', 'red', 'gbm')
+for i in range(len(v_rl)):
+    kum_ret_rl[i] = (v_rl[i] - v_rl[0]) / v_rl[0]
 
-# Set titles
-titles = ['Buy & Hold Strategy (w1)', 'Logarithmic Strategy (w2)', 
-        'Active day trading (w3)', 'RL Agent Strategy']
-for ax, title in zip(axs, titles):
-    ax.set_title(title)
+cumulative_max = np.maximum.accumulate(v_rl)
+drawdown = (v_rl - cumulative_max) / cumulative_max
+max_drawdown_rl = np.min(drawdown)
 
-plt.tight_layout()
-plt.show()
 
-# Print performance metrics
-print("\nPerformance Metrics:")
-print("-" * 50)
-print(f"Buy & Hold Final Value: ${v1[-1]:.2f}")
-print(f"Logarithmic Final Value: ${v2[-1]:.2f}")
-print(f"RL Agent Final Value: ${v_rl[-1]:.2f}")
-print(f"RL Agent Sharpe Ratio: {agent_results['sharpe_ratio']:.2f}")
 
-# Comparison plot
+
+print(f"Performance of DLP: \n")
+print(f"Buy and Hold{result_dlp1["metrics"]}, G&L: {result_dlp1["info"]['cumulative_returns'][-1]} ")
+print(f"Logarithmic{result_dlp2["metrics"]}, G&L: {result_dlp2["info"]['cumulative_returns'][-1]}")
+print(f"Active trading{result_dlp3["metrics"]}, G&L: {result_dlp3["info"]['cumulative_returns'][-1]}")
+
+print(f"Performance of DLP w rl: \n")
+print(f'max_drawdown: {max_drawdown_rl}, sharpe_ratio: {agent_results['sharpe_ratio']}, G&L: {kum_ret_rl[-2]}')
+
+
+
+
+# Example usage:
+    # Example data
 strategies = {
-    'Buy & Hold (w1)': v1,
-    'Logarithmic (w2)': v2,
-    'Oscillating (w3)': v3,
-    'RL Agent': v_rl
+    '(w0)': result_dlp1['info']['cumulative_returns'][0:len(kum_ret_rl)],
+    '(w1)': result_dlp2['info']['cumulative_returns'][0:len(kum_ret_rl)],
+    '(w2)': result_dlp3['info']['cumulative_returns'][0:len(kum_ret_rl)],
+    'RL Agent': kum_ret_rl[0:len(kum_ret_rl)-1]
 }
 
 # Plot comparison
@@ -432,3 +400,7 @@ ax1, ax2 = plot_strategy_comparison(
 plt.show()
 
 plt.close('all')
+
+
+
+#----------
