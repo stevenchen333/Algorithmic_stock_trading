@@ -1,6 +1,5 @@
-import json
-import pandas as pd
-with open("teststock_data_2024-01-02_to_2025-01-01.json","r") as f:
-    data = json.load(f)
-
-print(data['AAPL']['open'][1:100])
+import torch
+print(f"CUDA available: {torch.cuda.is_available()}")
+print(f"Number of GPUs: {torch.cuda.device_count()}")
+print(f"Current device: {torch.cuda.current_device()}")
+print(f"Device name: {torch.cuda.get_device_name(0)}")

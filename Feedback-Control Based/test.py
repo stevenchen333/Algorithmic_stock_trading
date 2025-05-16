@@ -4,7 +4,6 @@ import pandas as pd
 import numpy as np
 from AC_PG_BVTD import TradingEnvironment, LinearPolicyGradientAgent,train_agent, evaluate_agent, plot_results
 from ttingo_api import retrieve_stock
-from constants import ttingo_api_key
 from DLP import DLP
 import matplotlib.pyplot as plt
 from sklearn.model_selection import train_test_split
@@ -12,7 +11,7 @@ from sklearn.model_selection import train_test_split
 #retrieve_stock(tickers = ['AAPL'], start_date= '2015-01-01',  end_date='2025-01-01', save_file=True, token = ttingo_api_key)
 #TODO: Test RL Agent on SP 500, MSFT, GOOGL
 
-with open("test_spystock_data_2024-01-02_to_2025-01-01.json", "r") as f:
+with open("teststock_data_2024-01-02_to_2025-01-01.json", "r") as f:
     data = json.load(f)
 data_df = pd.DataFrame({
     'times': data['SPY']['dates'],

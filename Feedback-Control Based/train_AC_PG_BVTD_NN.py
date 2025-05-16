@@ -1,7 +1,13 @@
 import numpy as np
-from AC_PG_BVTD import TradingEnvironment, LinearPolicyGradientAgent,train_agent, evaluate_agent, plot_results
-import matplotlib.pyplot as plt
 import json
+from collections import deque
+from tqdm import tqdm
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import torch.nn.functional as F
+from AC_PG_BVTD_NN import TradingEnvironment, ActorCriticAgent,train_agent, evaluate_agent, plot_results
+import matplotlib.pyplot as plt
 import pandas as pd
 
 
@@ -102,7 +108,7 @@ def train_agent_across_stocks(training_path, agent_class, epochs_per_stock=1000,
             agent = agent_class(state_size, action_size, env.w_max)
         
         # Train agent on this stock/GBM
-        rewards, avg_rewards, asset_values = train_agent(
+        rewards_history, avg_rewards_history, asset_values_history, value_losses, policy_losses = train_agent(
             env, agent, episodes=epochs_per_stock
         )
         
@@ -118,9 +124,9 @@ def train_agent_across_stocks(training_path, agent_class, epochs_per_stock=1000,
         
         # Store results
         all_training_results[stock] = {
-            'rewards': rewards,
-            'avg_rewards': avg_rewards,
-            'asset_values': asset_values,
+            'rewards': rewards_history,
+            'avg_rewards': avg_rewards_history,
+            'asset_values': asset_values_history,
             'actions': actions_list
         }
         
@@ -166,8 +172,8 @@ def generate_gbm_with_jumps(n_steps=500, mu=-0.0005, sigma=0.02,
 # Usage
 agent, training_results = train_agent_across_stocks(
     training_path="trainstock_data_2015-01-01_to_2024-01-01.json",
-    agent_class=LinearPolicyGradientAgent, 
-    epochs_per_stock=200,
+    agent_class=ActorCriticAgent, 
+    epochs_per_stock=1000,
     include_gbm=True  # Now includes GBM with jumps in training
 )
 
